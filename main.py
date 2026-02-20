@@ -4,88 +4,99 @@ from datetime import datetime
 import os
 import time
 
+def fetch_with_retry(url, retries=3, delay=3):
+    """API 호출 제한을 우회하기 위한 지수 백오프 및 재시도 함수"""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/json'
+    }
+    for i in range(retries):
+        try:
+            resp = requests.get(url, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                return resp.json()
+            elif resp.status_code == 429: # Rate Limit Error
+                time.sleep(delay * (i + 2))
+            else:
+                time.sleep(delay)
+        except Exception:
+            time.sleep(delay)
+    return None
+
 def get_hype_data():
+    hype_price, hype_vol_b = 0, 0
+    
+    # 1. HYPE Price (Hyperliquid L1 API)
     try:
-        # 1. HYPE 토큰 가격 가져오기 (Hyperliquid 공식 API)
-        url = "https://api.hyperliquid.xyz/info"
+        url_info = "https://api.hyperliquid.xyz/info"
         payload = {"type": "metaAndAssetCtxs"}
-        resp = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}).json()
-        
-        hype_price = 0
-        for i, asset in enumerate(resp[0]['universe']):
+        resp_info = requests.post(url_info, json=payload, headers={'Content-Type': 'application/json'}).json()
+        for i, asset in enumerate(resp_info[0]['universe']):
             if asset['name'] == 'HYPE':
-                hype_price = round(float(resp[1][i]['markPx']), 2)
+                hype_price = round(float(resp_info[1][i]['markPx']), 2)
                 break
-        
-        # 2. Hyperliquid 파생상품 거래소 전체 거래량 가져오기 (CoinGecko API)
-        cg_url = "https://api.coingecko.com/api/v3/derivatives/exchanges/hyperliquid"
-        cg_resp = requests.get(cg_url).json()
-        vol_btc = float(cg_resp.get('trade_volume_24h_btc', 0))
-        
-        # 3. BTC -> USD 환산을 위한 비트코인 가격 조회
-        btc_price_data = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd").json()
-        btc_price = btc_price_data['bitcoin']['usd']
-        
-        # 4. Billion($B) 단위로 환산
-        hype_vol_b = round((vol_btc * btc_price) / 1e9, 2)
-        
-        return hype_vol_b, hype_price
     except Exception as e:
-        print(f"HYPE Error: {e}")
-        return 0, 0
+        print(f"HYPE Price Error: {e}")
+
+    # 2. HYPE Volume (CoinGecko API)
+    try:
+        cg_resp = fetch_with_retry("https://api.coingecko.com/api/v3/derivatives/exchanges/hyperliquid")
+        btc_data = fetch_with_retry("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd")
+        
+        if cg_resp and btc_data:
+            vol_btc = float(cg_resp.get('trade_volume_24h_btc', 0))
+            btc_price = btc_data['bitcoin']['usd']
+            hype_vol_b = round((vol_btc * btc_price) / 1e9, 2)
+    except Exception as e:
+        print(f"HYPE Vol Error: {e}")
+        
+    return hype_vol_b, hype_price
 
 def get_competitor_data():
-    try:
-        cg_url = "https://api.coingecko.com/api/v3/exchanges"
-        
-        # Binance
-        bin_data = requests.get(f"{cg_url}/binance").json()
-        binance_vol_btc = float(bin_data['trade_volume_24h_btc'])
-        
-        # Coinbase
-        coin_data = requests.get(f"{cg_url}/gdax").json() # Coinbase Pro = gdax
-        coinbase_vol_btc = float(coin_data['trade_volume_24h_btc'])
-        
-        # Upbit
-        upbit_data = requests.get(f"{cg_url}/upbit").json()
-        upbit_vol_btc = float(upbit_data['trade_volume_24h_btc'])
-        
-        # BTC Price for conversion
-        btc_price_data = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd").json()
-        btc_price = btc_price_data['bitcoin']['usd']
-        
-        return (
-            round(binance_vol_btc * btc_price / 1e9, 2), # Billions
-            round(coinbase_vol_btc * btc_price / 1e9, 2),
-            round(upbit_vol_btc * btc_price / 1e9, 2)
-        )
-    except Exception as e:
-        print(f"Competitor Error: {e}")
+    bin_vol, coin_vol, upbit_vol = 0, 0, 0
+    
+    # 공통 BTC 가격 선 조회
+    btc_data = fetch_with_retry("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd")
+    if not btc_data:
+        print("Competitor Error: Failed to fetch BTC price.")
         return 0, 0, 0
+    btc_price = btc_data['bitcoin']['usd']
+
+    # 각각 개별 블록으로 분리하여 하나가 실패해도 나머지는 보존
+    bin_data = fetch_with_retry("https://api.coingecko.com/api/v3/exchanges/binance")
+    if bin_data: 
+        bin_vol = round(float(bin_data.get('trade_volume_24h_btc', 0)) * btc_price / 1e9, 2)
+        
+    coin_data = fetch_with_retry("https://api.coingecko.com/api/v3/exchanges/gdax")
+    if coin_data: 
+        coin_vol = round(float(coin_data.get('trade_volume_24h_btc', 0)) * btc_price / 1e9, 2)
+        
+    upbit_data = fetch_with_retry("https://api.coingecko.com/api/v3/exchanges/upbit")
+    if upbit_data: 
+        upbit_vol = round(float(upbit_data.get('trade_volume_24h_btc', 0)) * btc_price / 1e9, 2)
+        
+    return bin_vol, coin_vol, upbit_vol
 
 def main():
-    # 파일명
     file_name = 'data.csv'
     today = datetime.now().strftime('%Y-%m-%d')
     
-    # 1. 기존 데이터 로드
     if os.path.exists(file_name):
         df = pd.read_csv(file_name)
     else:
         df = pd.DataFrame(columns=['Date', 'HYPE_Vol_B', 'HYPE_Price', 'Binance_Vol_B', 'Coinbase_Vol_B', 'Upbit_Vol_B'])
     
-    # 2. 중복 실행 방지 (오늘 날짜가 이미 있으면 스킵)
     if today in df['Date'].values:
+        # 이미 데이터가 존재하나, 0이 있는지 확인 후 덮어쓰기 로직 필요 시 추가 가능.
+        # 기본 스케줄러 목적상 당일 중복 수집은 회피.
         print(f"Data for {today} already exists.")
         return
 
-    # 3. 데이터 수집
     hype_vol, hype_price = get_hype_data() 
     bin_vol, coin_vol, upbit_vol = get_competitor_data()
     
-    print(f"Collected: {today} | HYPE: ${hype_price} (Vol: {hype_vol}B) | Bin: {bin_vol}B | Coin: {coin_vol}B | Up: {upbit_vol}B")
+    print(f"Collected: {today} | HYPE: ${hype_price}({hype_vol}B) | Bin: {bin_vol}B | Coin: {coin_vol}B | Up: {upbit_vol}B")
     
-    # 4. 데이터 추가
     new_row = {
         'Date': today,
         'HYPE_Vol_B': hype_vol,
@@ -95,10 +106,7 @@ def main():
         'Upbit_Vol_B': upbit_vol
     }
     
-    new_df = pd.DataFrame([new_row])
-    df = pd.concat([df, new_df], ignore_index=True)
-    
-    # 5. 저장
+    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
     df.to_csv(file_name, index=False)
     print("CSV Saved successfully.")
 
