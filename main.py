@@ -86,11 +86,10 @@ def main():
     else:
         df = pd.DataFrame(columns=['Date', 'HYPE_Vol_B', 'HYPE_Price', 'Binance_Vol_B', 'Coinbase_Vol_B', 'Upbit_Vol_B'])
     
+# 오늘 날짜의 데이터가 이미 존재할 경우, 해당 행을 삭제하여 덮어쓰기 준비
     if today in df['Date'].values:
-        # 이미 데이터가 존재하나, 0이 있는지 확인 후 덮어쓰기 로직 필요 시 추가 가능.
-        # 기본 스케줄러 목적상 당일 중복 수집은 회피.
-        print(f"Data for {today} already exists.")
-        return
+        df = df[df['Date'] != today]
+        print(f"Existing data for {today} removed. Will be overwritten with latest data.")
 
     hype_vol, hype_price = get_hype_data() 
     bin_vol, coin_vol, upbit_vol = get_competitor_data()
