@@ -10,7 +10,8 @@ def get_competitor_data():
 
     # 2. 거래소 '전체 목록'을 한 번만 호출 (API 과부하 방지)
     # per_page=100을 주면 전 세계 100대 거래소가 한 번에 딸려옵니다.
-    exchanges_data = fetch_with_retry("https://api.coingecko.com/api/v3/exchanges?per_page=100")
+    # per_page를 100에서 250으로 변경합니다.
+    exchanges_data = fetch_with_retry("https://api.coingecko.com/api/v3/exchanges?per_page=250")
     
     if exchanges_data:
         # 데이터 목록을 돌면서 필요한 거래소 3개만 쏙쏙 뽑아냅니다.
