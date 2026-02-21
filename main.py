@@ -1,30 +1,106 @@
+import requests
+import pandas as pd
+from datetime import datetime, timedelta, timezone
+import os
+import time
+
+def fetch_with_retry(url, retries=3, delay=3):
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+        'Accept': 'application/json'
+    }
+    for i in range(retries):
+        try:
+            resp = requests.get(url, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                return resp.json()
+            elif resp.status_code == 429:
+                time.sleep(delay * (i + 2))
+            else:
+                time.sleep(delay)
+        except Exception:
+            time.sleep(delay)
+    return None
+
+def get_hype_data():
+    hype_price, hype_vol_b = 0, 0
+    try:
+        url_info = "https://api.hyperliquid.xyz/info"
+        payload = {"type": "metaAndAssetCtxs"}
+        resp_info = requests.post(url_info, json=payload, headers={'Content-Type': 'application/json'}).json()
+        for i, asset in enumerate(resp_info[0]['universe']):
+            if asset['name'] == 'HYPE':
+                hype_price = round(float(resp_info[1][i]['markPx']), 2)
+                break
+    except Exception as e:
+        print(f"HYPE Price Error: {e}")
+
+    try:
+        cg_resp = fetch_with_retry("https://api.coingecko.com/api/v3/derivatives/exchanges/hyperliquid")
+        btc_data = fetch_with_retry("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd")
+        if cg_resp and btc_data:
+            vol_btc = float(cg_resp.get('trade_volume_24h_btc', 0))
+            btc_price = btc_data['bitcoin']['usd']
+            hype_vol_b = round((vol_btc * btc_price) / 1e9, 2)
+    except Exception as e:
+        print(f"HYPE Vol Error: {e}")
+        
+    return hype_vol_b, hype_price
+
 def get_competitor_data():
     bin_vol, coin_vol, upbit_vol = 0, 0, 0
-    
-    # 1. 공통 BTC 가격 선 조회
     btc_data = fetch_with_retry("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd")
     if not btc_data:
-        print("Competitor Error: Failed to fetch BTC price.")
         return 0, 0, 0
     btc_price = btc_data['bitcoin']['usd']
 
-    # 2. 거래소 '전체 목록'을 한 번만 호출 (API 과부하 방지)
-    # per_page=100을 주면 전 세계 100대 거래소가 한 번에 딸려옵니다.
-    # per_page를 100에서 250으로 변경합니다.
     exchanges_data = fetch_with_retry("https://api.coingecko.com/api/v3/exchanges?per_page=250")
-    
     if exchanges_data:
-        # 데이터 목록을 돌면서 필요한 거래소 3개만 쏙쏙 뽑아냅니다.
         for ex in exchanges_data:
             ex_id = ex.get('id')
             if ex_id == 'binance':
                 bin_vol = round(float(ex.get('trade_volume_24h_btc', 0)) * btc_price / 1e9, 2)
-            elif ex_id == 'gdax': # Coinbase Pro의 API ID는 gdax입니다.
+            elif ex_id == 'gdax': 
                 coin_vol = round(float(ex.get('trade_volume_24h_btc', 0)) * btc_price / 1e9, 2)
             elif ex_id == 'upbit':
                 upbit_vol = round(float(ex.get('trade_volume_24h_btc', 0)) * btc_price / 1e9, 2)
-                
-    else:
-        print("Competitor Error: Failed to fetch exchanges list.")
-        
     return bin_vol, coin_vol, upbit_vol
+
+def main():
+    file_name = 'data.csv'
+    
+    # [수정] 한국 시간(KST)으로 타임존 강제 고정
+    KST = timezone(timedelta(hours=9))
+    today = datetime.now(KST).strftime('%Y-%m-%d')
+    print(f"Target Date (KST): {today}")
+    
+    if os.path.exists(file_name):
+        df = pd.read_csv(file_name)
+    else:
+        df = pd.DataFrame(columns=['Date', 'HYPE_Vol_B', 'HYPE_Price', 'Binance_Vol_B', 'Coinbase_Vol_B', 'Upbit_Vol_B'])
+    
+    # [수정] 오늘 날짜 데이터가 이미 있으면 삭제하고 덮어쓰기 진행
+    if today in df['Date'].values:
+        df = df[df['Date'] != today]
+        print(f"Removed existing data for {today}. Overwriting with latest data.")
+
+    hype_vol, hype_price = get_hype_data() 
+    bin_vol, coin_vol, upbit_vol = get_competitor_data()
+    
+    print(f"Collected: {today} | HYPE: ${hype_price} ({hype_vol}B) | Bin: {bin_vol}B | Coin: {coin_vol}B | Up: {upbit_vol}B")
+    
+    new_row = {
+        'Date': today,
+        'HYPE_Vol_B': hype_vol,
+        'HYPE_Price': hype_price,
+        'Binance_Vol_B': bin_vol,
+        'Coinbase_Vol_B': coin_vol,
+        'Upbit_Vol_B': upbit_vol
+    }
+    
+    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+    df.to_csv(file_name, index=False)
+    print("CSV Saved successfully.")
+
+if __name__ == "__main__":
+    main()
